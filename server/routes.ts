@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import { storage, StorageManager, storageContext, AdminUser, ItemRecord, ItemFileEntry, TriggerType, OpenMode, ClonedBotRecord, SharedStorageService, KeyPoolRecord, DEFAULT_MODERATION_DURATIONS, sanitizeModerationDurations } from './storage';
 import { TelegramService, TelegramBotManager, BotSingletonLock, getItemPayload } from './telegram';
 import { hashPassword, verifyPassword, signSessionToken, verifySessionToken } from './auth';
+import { FreeFireGuestService } from './ffGuestApi';
 
 dotenv.config({ override: true });
 
@@ -61,6 +62,48 @@ apiRouter.get('/health', async (_req: Request, res: Response) => {
       conflicts: BotSingletonLock.getAllConflicts()
     }
   });
+});
+
+// Self-hosted Free Fire Guest Account Bancheck API
+apiRouter.get('/bancheck/status', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(200).json(FreeFireGuestService.getStatus());
+});
+
+apiRouter.get('/bancheck', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const rawUid = String(req.query.uid || '').trim();
+  if (!/^\d{5,20}$/.test(rawUid)) {
+    return res.status(400).json({
+      ok: false,
+      code: 'INVALID_UID',
+      error: 'Valid numeric Free Fire UID is required (?uid=<uid>).'
+    });
+  }
+
+  try {
+    const result = await FreeFireGuestService.checkBanStatus(rawUid);
+    if (!result.ok) {
+      const statusCode =
+        result.code === 'GUEST_CREDENTIALS_MISSING'
+          ? 503
+          : result.code === 'INVALID_GUEST_CREDENTIALS'
+            ? 401
+            : result.code === 'PLAYER_NOT_FOUND'
+              ? 404
+              : result.code === 'INVALID_UID'
+                ? 400
+                : 502;
+      return res.status(statusCode).json(result);
+    }
+    return res.status(200).json(result);
+  } catch (err: any) {
+    return res.status(500).json({
+      ok: false,
+      code: 'UPSTREAM_ERROR',
+      error: err?.message || 'Failed to check Free Fire ban status.'
+    });
+  }
 });
 
 // Multer upload middleware for direct binary/multipart file streaming (up to 500MB)
